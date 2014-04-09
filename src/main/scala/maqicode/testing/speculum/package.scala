@@ -38,7 +38,6 @@ package maqicode.testing
 package object speculum {
 
   import scala.language.experimental.macros
-  //import scala.reflect.macros.{ BlackboxContext => Context }
   import scala.reflect.macros.blackbox.Context
   import scala.collection.mutable.ListBuffer
   import scala.util.Properties
@@ -48,18 +47,18 @@ package object speculum {
 
     def debug(s: String, t: Tree) = if (isDebug) Console println s"$s ${showRaw(t)}"
 
-    /** The column that begins the field to display this tree. */
+    /*# The column that begins the field to display this tree. */
     def anchorOf(t: Tree): Int = t match {
       case Apply(rec, _)     => anchorOf(rec)
       case TypeApply(rec, _) => anchorOf(rec)
       case _                 => t.pos.column
     }
-    /** Wrap booleans in asserts. */
+    /*# Wrap booleans in asserts. */
     def wrapped(stats: List[Tree]): List[Tree] = stats.zipWithIndex map { case (t, i) =>
-      if (t.tpe <:< typeOf[Boolean]) q"assert($t, $i)"
+      if (t.tpe <:< typeOf[Boolean]) q"assert($t, ${q"$i"})"
       else t
     }
-    /** Generate the hander to replay the code, capturing intermediate values
+    /*# Generate the hander to replay the code, capturing intermediate values
      *  for the error message.
      */
     def handled(stats: List[Tree]) = {
@@ -70,8 +69,9 @@ package object speculum {
           def enter(x: Tree): Tree = {
             // register for inspection
             def register(tmp: Tree): Tree = {
-              def typee = Literal(Constant(x.tpe.typeSymbol.toString))
-              if (x.tpe.typeSymbol.isType) q"""register($tmp, $typee, ${anchorOf(x)})"""
+              val typee  = Literal(Constant(x.tpe.typeSymbol.toString))
+              val anchor = q"${anchorOf(x)}"
+              if (x.tpe.typeSymbol.isType) q"register($tmp, $typee, $anchor)"
               else tmp
             }
             debug("Entering", x)
@@ -84,7 +84,7 @@ package object speculum {
                 val rr = enter(rec)
                 register(TypeApply(rr, args))
               case _: Select if x.symbol.isModule => x
-              case Select(qual, name)   =>
+              case Select(qual, name: TermName)   =>
                 val qq = enter(qual)
                 q"$qq.$name"
               case Literal(_) | New(_)  => x
@@ -97,20 +97,22 @@ package object speculum {
 
         // code to invoke the eval and generate the explanation
         def showing(x: Tree, margin: Int, offset: Int): Tree = {
-            //import scala.tools.testing.speculum._
+          val m = q"$margin"
+          val i = q"$offset"
           q"""{
             import maqicode.testing.speculum._
             tmps.clear()
             val b = $eval
             if (b) Console println "Eval is unexpectedly true!"
-            format(tmps.toList, $margin, $offset)
+            format(tmps.toList, $m, $i)
           }"""
         }
 
+        def lineAt(p: Position) = p.source lineToString (p.line - 1)
         val lincol = s"[${t.pos.line}:${t.pos.column}]: "
-        val header = Literal(Constant(f"%n$lincol${t.pos.lineContent.trim}%n"))
+        val header = Literal(Constant(f"%n$lincol${ lineAt(t.pos).trim }%n"))
         val margin = lincol.size
-        val offset = t.pos.lineContent.prefixLength(_.isSpaceChar)
+        val offset = lineAt(t.pos).prefixLength(_.isSpaceChar)
         q"""{
           val $$res  = ${ showing(t, margin, offset) }
           $header + $$res
@@ -120,14 +122,15 @@ package object speculum {
       // the booleans are checked for our failure, which we reassert
       def inspector = stats.zipWithIndex flatMap { case (t, i) =>
         debug("Inspecting", t)
+        val it = q"$i"
         val eval =
           if (t.tpe <:< typeOf[Boolean])
-            q"""if ($$failure == $i) {
+            q"""if ($$failure == $it) {
                   val formatted = ${display(t)}
                   assert(false, formatted)
                 } else $t"""
           else t
-        List(eval, q"""require($$failure > $i, "" + $$failure + " > " + $i)""")
+        List(eval, q"""require($$failure > $it, "" + $$failure + " > " + $it)""")
       }
       // peel off what failed, then look for it
       cq"""e: AssertionError =>
